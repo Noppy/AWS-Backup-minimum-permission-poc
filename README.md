@@ -13,8 +13,9 @@ AWS Backupの最小権限の調査手順
 これ以降のAWS-CLIで共通で利用するパラメータを環境変数で設定しておきます。
 ```shell
 export PROFILE=<設定したプロファイル名称を指定。デフォルトの場合はdefaultを設定>
-export REGION=$(aws --profile ${PROFILE} configure get region)
-echo -e "PROFILE = ${PROFILE}\nREGION  = ${REGION}"
+export REGION=$(aws --output text --profile ${PROFILE} configure get region)
+export ACCOUNTID=$(aws --output text --profile ${PROFILE} sts get-caller-identity --query 'Account')
+echo -e "PROFILE   = ${PROFILE}\nREGION    = ${REGION}\nACCOUNTID = ${ACCOUNTID}"
 ```
 検証で用意するRoleにAssumeする元のIAMユーザを指定します。
 ```shell
@@ -53,11 +54,9 @@ POLICY='{
       "Sid": "BackupAdmin",
       "Effect": "Allow",
       "Action": [
-        "backup:"
+        "backup:CreateBackupVault"
       ],
-      "Resource": [
-        "*"
-      ]
+      "Resource": "arn:aws:backup:'"${REGION}"':'"${ACCOUNTID}"':backup-vault:*"
     }
   ]
 }'
