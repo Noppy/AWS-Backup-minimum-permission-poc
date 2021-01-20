@@ -21,8 +21,23 @@ echo -e "PROFILE   = ${PROFILE}\nREGION    = ${REGION}\nACCOUNTID = ${ACCOUNTID}
 ```shell
 TRUST_IAMUSER_ARN="<AssumeRole元のIAMユーザARNを指定する>"
 ```
-## (2)IAMロールの作成
-### (2)-(a)AWS Backup管理者のIAMロール作成
+## (2)KMS CMKの作成(EFSデータバックアップ用の鍵の作成)
+```shell
+KEY_ID=$( \
+aws --profile ${PROFILE} --output text \
+    kms create-key \
+	    --description "CMK for AWS backup(EFS)" \
+	    --origin AWS_KMS \
+	--query 'KeyMetadata.KeyId' )
+
+aws --profile ${PROFILE} \
+    kms create-alias \
+	    --alias-name alias/Key_For_EFSBackup \
+	    --target-key-id ${KEY_ID}
+```
+
+## (3)IAMロールの作成
+### (3)-(a)AWS Backup管理者のIAMロール作成
 ```shell
 POLICY='{
   "Version": "2012-10-17",
@@ -61,10 +76,34 @@ POLICY='{
   ]
 }'
 #インラインポリシーの設定
-aws --profile ${PROFILE} \
+aws --profile ${PROFILE} --region ${REGION} \
     iam put-role-policy \
         --role-name "BackupTest-AdminRole" \
         --policy-name "AWSBackupAdminPolicy" \
         --policy-document "${POLICY}";
         
+```
+
+## (4)AWS Backup管理者のAWS CLIプロファイル作成
+```shell
+# BackupTest-AdminRoleのARNを確認する
+ADMIN_ROLE_ARN=$(aws --output text --profile ${PROFILE} --region ${REGION} \
+    iam get-role \
+        --role-name "BackupTest-AdminRole" \
+    --query 'Role.Arn')
+
+#Admin用のProfileの設定
+echo -e "[profile backupadmin]\nregion = ${REGION}\noutput = json" >> ~/.aws/config
+echo -e "[backupadmin]\nrole_arn = ${ADMIN_ROLE_ARN}\nsource_profile = ${PROFILE}" >> ~/.aws/credentials
+#設定確認
+aws --profile backupadmin sts get-caller-identity
+
+```
+
+AWS Backup Vault作成
+```shell
+aws --profile backupadmin \
+    backup create-backup-vault \
+        --backup-vault-name EFS-Test
+        --encryption-key-arn 
 ```
