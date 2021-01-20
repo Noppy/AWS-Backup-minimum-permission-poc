@@ -24,20 +24,22 @@ TRUST_IAMUSER_ARN="<AssumeRole元のIAMユーザARNを指定する>"
 ## (2)KMS CMKの作成(EFSデータバックアップ用の鍵の作成)
 ```shell
 KEY_ID=$( \
-aws --profile ${PROFILE} --output text \
+aws --profile ${PROFILE} --region ${REGION} --output text \
     kms create-key \
 	    --description "CMK for AWS backup(EFS)" \
 	    --origin AWS_KMS \
 	--query 'KeyMetadata.KeyId' )
 
-aws --profile ${PROFILE} \
+aws --profile ${PROFILE} --region ${REGION} \
     kms create-alias \
 	    --alias-name alias/Key_For_EFSBackup \
 	    --target-key-id ${KEY_ID}
 ```
 
-## (3)IAMロールの作成
-### (3)-(a)AWS Backup管理者のIAMロール作成
+## (3)EFSの作成(バックアップ対象の準備)
+
+## (4)IAMロールの作成
+### (4)-(a)AWS Backup管理者のIAMロール作成
 ```shell
 POLICY='{
   "Version": "2012-10-17",
@@ -66,13 +68,33 @@ POLICY='{
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "BackupAdmin",
+      "Sid": "ManagedVault",
       "Effect": "Allow",
       "Action": [
         "backup:CreateBackupVault"
       ],
       "Resource": "arn:aws:backup:'"${REGION}"':'"${ACCOUNTID}"':backup-vault:*"
-    }
+    },
+    {
+      "Sid": "ManagedBackupStorageForVault",
+      "Effect": "Allow",
+      "Action": [
+        "backup-storage:MountCapsule"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "UseCMKForVault",
+      "Effect": "Allow",
+      "Action": [
+          "kms:CreateGrant",
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+          "kms:RetireGrant",
+          "kms:DescribeKey"
+       ],
+       "Resource": "arn:aws:kms:'"${REGION}"':'"${ACCOUNTID}"':key*"
+      }
   ]
 }'
 #インラインポリシーの設定
@@ -84,7 +106,7 @@ aws --profile ${PROFILE} --region ${REGION} \
         
 ```
 
-## (4)AWS Backup管理者のAWS CLIプロファイル作成
+## (5)AWS Backup管理者のAWS CLIプロファイル作成
 ```shell
 # BackupTest-AdminRoleのARNを確認する
 ADMIN_ROLE_ARN=$(aws --output text --profile ${PROFILE} --region ${REGION} \
@@ -100,10 +122,18 @@ aws --profile backupadmin sts get-caller-identity
 
 ```
 
-AWS Backup Vault作成
+## (6)AWS Backupの設定
+### (6)-(a) BackupVault作成
 ```shell
+#CMKのARN取得
+CMK_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text\
+    kms describe-key \
+        --key-id arn:aws:kms:ap-northeast-1:270025184181:alias/Key_For_EFSBackup \
+    --query 'KeyMetadata.Arn' )
+
+#Backup Vaultの作成
 aws --profile backupadmin \
     backup create-backup-vault \
-        --backup-vault-name EFS-Test
-        --encryption-key-arn 
+        --backup-vault-name EFS-Test \
+        --encryption-key-arn ${CMK_ARN}
 ```
