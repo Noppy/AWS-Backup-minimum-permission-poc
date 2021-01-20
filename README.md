@@ -41,6 +41,13 @@ aws --profile ${PROFILE} --region ${REGION} \
 ## (4)IAMロールの作成
 ### (4)-(a)AWS Backup管理者のIAMロール作成
 ```shell
+#CMKのARN取得
+CMK_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text\
+    kms describe-key \
+        --key-id arn:aws:kms:ap-northeast-1:270025184181:alias/Key_For_EFSBackup \
+    --query 'KeyMetadata.Arn' )
+
+#TrustPolicy
 POLICY='{
   "Version": "2012-10-17",
   "Statement": [
@@ -93,7 +100,7 @@ POLICY='{
           "kms:RetireGrant",
           "kms:DescribeKey"
        ],
-       "Resource": "arn:aws:kms:'"${REGION}"':'"${ACCOUNTID}"':key*"
+       "Resource": "'"${CMK_ARN}"'"
       }
   ]
 }'
@@ -134,6 +141,6 @@ CMK_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text\
 #Backup Vaultの作成
 aws --profile backupadmin \
     backup create-backup-vault \
-        --backup-vault-name EFS-Test \
+        --backup-vault-name TestEFS-BackupVault \
         --encryption-key-arn ${CMK_ARN}
 ```
