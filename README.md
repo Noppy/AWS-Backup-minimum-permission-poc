@@ -144,3 +144,45 @@ aws --profile backupadmin \
         --backup-vault-name TestEFS-BackupVault \
         --encryption-key-arn ${CMK_ARN}
 ```
+
+### (6)-(b) BackupPlan作成
+```shell
+
+
+{
+  "BackupPlanName": "string",
+  "Rules": [
+    {
+      "RuleName": "string",
+      "TargetBackupVaultName": "string",
+      "ScheduleExpression": "string",
+      "StartWindowMinutes": long,
+      "CompletionWindowMinutes": long,
+      "Lifecycle": {
+        "MoveToColdStorageAfterDays": long,
+        "DeleteAfterDays": long
+      },
+      "RecoveryPointTags": {"string": "string"
+        ...},
+      "CopyActions": [
+        {
+          "Lifecycle": {
+            "MoveToColdStorageAfterDays": long,
+            "DeleteAfterDays": long
+          },
+          "DestinationBackupVaultArn": "string"
+        }
+        ...
+      ]
+    }
+    ...
+  ],
+  "AdvancedBackupSettings": [
+    {
+      "ResourceType": "string",
+      "BackupOptions": {"string": "string"
+        ...}
+    }
+    ...
+  ]
+}
