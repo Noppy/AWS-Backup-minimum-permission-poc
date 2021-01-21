@@ -31,17 +31,36 @@ cd AWS-Backup-minimum-permission-poc
 検証で用意するRoleにAssumeする元のIAMユーザを指定します。
 ```shell
 TRUST_IAMUSER_ARN="<AssumeRole元のIAMユーザARNを指定する>"
+SOURCE_REGION="ap-northeast-1"
+DEST_REGION="ap-southeast-2"
 ```
 ## (2)KMS CMKの作成(EFSデータバックアップ用の鍵の作成)
+### (2)-(a)バックアップ元リージョンでのCMK作成
 ```shell
+# バックアップ元リージョンでのBackupVaultで指定するCMK作成
 KEY_ID=$( \
-aws --profile ${PROFILE} --region ${REGION} --output text \
+aws --profile ${PROFILE} --region ${SOURCE_REGION} --output text \
     kms create-key \
 	    --description "CMK for AWS backup(EFS)" \
 	    --origin AWS_KMS \
 	--query 'KeyMetadata.KeyId' )
 
-aws --profile ${PROFILE} --region ${REGION} \
+aws --profile ${PROFILE} --region ${SOURCE_REGION} \
+    kms create-alias \
+	    --alias-name alias/Key_For_EFSBackup \
+	    --target-key-id ${KEY_ID}
+```
+### (2)-(b)バックアップのコピー先リージョンでのCMK作成
+```shell
+# バックアップのコピー先リージョンでのBackupVaultで指定するCMK作成
+KEY_ID=$( \
+aws --profile ${PROFILE} --region ${DEST_REGION} --output text \
+    kms create-key \
+	    --description "CMK for AWS backup(EFS)" \
+	    --origin AWS_KMS \
+	--query 'KeyMetadata.KeyId' )
+
+aws --profile ${PROFILE} --region ${DEST_REGION} \
     kms create-alias \
 	    --alias-name alias/Key_For_EFSBackup \
 	    --target-key-id ${KEY_ID}
@@ -111,20 +130,19 @@ aws --profile ${PROFILE} cloudformation create-stack \
     --parameters "${CFN_STACK_PARAMETERS}";
 ```
 
-
-
-### (3)-(b) EFSやBastionの作成
-
-
 ## (4)IAMロールの作成
 ### (4)-(a)AWS Backup管理者のIAMロール作成
 ```shell
 #CMKのARN取得
-CMK_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text\
+SOURCE_CMK_ARN=$(aws --profile ${PROFILE} --region ${SOURCE_REGION} --output text\
     kms describe-key \
-        --key-id arn:aws:kms:ap-northeast-1:270025184181:alias/Key_For_EFSBackup \
+        --key-id arn:aws:kms:${SOURCE_REGION}:${ACCOUNTID}:alias/Key_For_EFSBackup \
     --query 'KeyMetadata.Arn' )
-
+DEST_CMK_ARN=$(aws --profile ${PROFILE} --region ${DEST_REGION} --output text\
+    kms describe-key \
+        --key-id arn:aws:kms:${DEST_REGION}:${ACCOUNTID}:alias/Key_For_EFSBackup \
+    --query 'KeyMetadata.Arn' )
+echo -e "SOURCE_CMK_ARN = ${SOURCE_CMK_ARN}\nDEST_CMK_ARN   = ${DEST_CMK_ARN}"
 #TrustPolicy
 POLICY='{
   "Version": "2012-10-17",
@@ -147,21 +165,56 @@ aws --profile ${PROFILE} --region ${REGION} \
         --assume-role-policy-document "${POLICY}" \
         --max-session-duration 43200
 
+        "arn:aws:backup:'"${SOURCE_REGION}"':'"${ACCOUNTID}"':backup-vault:*",
+        "arn:aws:backup:'"${DEST_REGION}"':'"${ACCOUNTID}"':backup-vault:*"
 
 #インラインポリシーの追加
 POLICY='{
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "ManagedVault",
+      "Sid": "CreateServiceRole",
       "Effect": "Allow",
       "Action": [
-        "backup:CreateBackupVault"
+        "iam:CreateServiceLinkedRole"
       ],
-      "Resource": "arn:aws:backup:'"${REGION}"':'"${ACCOUNTID}"':backup-vault:*"
+      "Resource": [
+        "arn:aws:iam::'"${Account}"':role/*"
+      ]
     },
     {
-      "Sid": "ManagedBackupStorageForVault",
+      "Sid": "ViewOtherResources",
+      "Effect": "Allow",
+      "Action": [
+        "iam:Get*",
+        "iam:List*",
+        "elasticfilesystem:Describe*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadBackupResouces",
+      "Effect": "Allow",
+      "Action": [
+        "backup:Describe*",
+        "backup:Get*",
+        "backup:List*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageBackupVaults",
+      "Effect": "Allow",
+      "Action": [
+        "backup:CreateBackupVault",
+        "backup:DeleteBackupVault"
+      ],
+      "Resource": [
+        "arn:aws:backup:*:'"${ACCOUNTID}"':backup-vault:*"
+      ]
+    },
+    {
+      "Sid": "ManageBackupStoragesForVaults",
       "Effect": "Allow",
       "Action": [
         "backup-storage:MountCapsule"
@@ -172,16 +225,44 @@ POLICY='{
       "Sid": "UseCMKForVault",
       "Effect": "Allow",
       "Action": [
-          "kms:CreateGrant",
-          "kms:GenerateDataKey",
-          "kms:Decrypt",
-          "kms:RetireGrant",
-          "kms:DescribeKey"
-       ],
-       "Resource": "'"${CMK_ARN}"'"
-      }
+        "kms:CreateGrant",
+        "kms:GenerateDataKey",
+        "kms:Decrypt",
+        "kms:RetireGrant",
+        "kms:DescribeKey"
+      ],
+      "Resource": [
+        "'"${SOURCE_CMK_ARN}"'",
+        "'"${DEST_CMK_ARN}"'"
+      ]
+    },
+    {
+      "Sid": "ManageBackupPlansAndSelection",
+      "Effect": "Allow",
+      "Action": [
+        "backup:CreateBackupPlan",
+        "backup:CreateBackupPlan",
+        "backup:UpdateBackupPlan",
+        "backup:CreateBackupSelection",
+        "backup:DeleteBackupSelection"
+      ],
+      "Resource": [
+        "arn:aws:backup:*:'"${ACCOUNTID}"':backup-plan:*"
+      ]
+    },
+    {
+      "Sid": "PassRoleForCreateSelection",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::'"${ACCOUNTID}"':role/aws-service-role/backup.amazonaws.com/AWSServiceRoleForBackup"
+      ]
+    }
   ]
 }'
+
 #インラインポリシーの設定
 aws --profile ${PROFILE} --region ${REGION} \
     iam put-role-policy \
@@ -211,56 +292,114 @@ aws --profile backupadmin sts get-caller-identity
 ### (6)-(a) BackupVault作成
 ```shell
 #CMKのARN取得
-CMK_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text\
+SOURCE_CMK_ARN=$(aws --profile ${PROFILE} --region ${SOURCE_REGION} --output text\
     kms describe-key \
-        --key-id arn:aws:kms:ap-northeast-1:270025184181:alias/Key_For_EFSBackup \
+        --key-id arn:aws:kms:${SOURCE_REGION}:${ACCOUNTID}:alias/Key_For_EFSBackup \
     --query 'KeyMetadata.Arn' )
+DEST_CMK_ARN=$(aws --profile ${PROFILE} --region ${DEST_REGION} --output text\
+    kms describe-key \
+        --key-id arn:aws:kms:${DEST_REGION}:${ACCOUNTID}:alias/Key_For_EFSBackup \
+    --query 'KeyMetadata.Arn' )
+echo -e "SOURCE_CMK_ARN = ${SOURCE_CMK_ARN}\nDEST_CMK_ARN   = ${DEST_CMK_ARN}"
 
-#Backup Vaultの作成
-aws --profile backupadmin \
+#バックアップ元リージョンでの Backup Vaultの作成
+aws --profile backupadmin --region ${SOURCE_REGION}\
     backup create-backup-vault \
-        --backup-vault-name TestEFS-BackupVault \
-        --encryption-key-arn ${CMK_ARN}
+        --backup-vault-name TestEFS-Source-BackupVault \
+        --encryption-key-arn ${SOURCE_CMK_ARN}
+
+#バックアップ先リージョンでの Backup Vaultの作成
+aws --profile backupadmin --region ${DEST_REGION}\
+    backup create-backup-vault \
+        --backup-vault-name TestEFS-Dest-BackupVault \
+        --encryption-key-arn ${DEST_CMK_ARN}
 ```
 
 ### (6)-(b) BackupPlan作成
 ```shell
+DEST_BACKUPVAUT_ARN=$(aws --profile backupadmin --region ${DEST_REGION} --output text \
+    backup describe-backup-vault \
+        --backup-vault-name TestEFS-Dest-BackupVault \
+    --query 'BackupVaultArn')
 
-
+BACKUP_PLAN_JSON='
 {
-  "BackupPlanName": "string",
+  "BackupPlanName": "TestEFS-testplan",
   "Rules": [
     {
-      "RuleName": "string",
-      "TargetBackupVaultName": "string",
-      "ScheduleExpression": "string",
-      "StartWindowMinutes": long,
-      "CompletionWindowMinutes": long,
+      "RuleName": "HalfDayBackups",
+      "TargetBackupVaultName": "TestEFS-Source-BackupVault",
+      "ScheduleExpression": "cron(0 5/12 ? * * *)",
+      "StartWindowMinutes": 480,
+      "CompletionWindowMinutes": 10080,
       "Lifecycle": {
-        "MoveToColdStorageAfterDays": long,
-        "DeleteAfterDays": long
+        "MoveToColdStorageAfterDays": 8,
+        "DeleteAfterDays": 100
       },
-      "RecoveryPointTags": {"string": "string"
-        ...},
+      "RecoveryPointTags": {
+        "Key": "Rule",
+        "Value": "HalfDayBackups" 
+      },
       "CopyActions": [
         {
           "Lifecycle": {
-            "MoveToColdStorageAfterDays": long,
-            "DeleteAfterDays": long
+            "MoveToColdStorageAfterDays": 8,
+            "DeleteAfterDays": 100
           },
-          "DestinationBackupVaultArn": "string"
+          "DestinationBackupVaultArn": "'"${DEST_BACKUPVAUT_ARN}"'"
         }
-        ...
       ]
     }
-    ...
-  ],
-  "AdvancedBackupSettings": [
-    {
-      "ResourceType": "string",
-      "BackupOptions": {"string": "string"
-        ...}
-    }
-    ...
   ]
 }
+'
+
+#バックアップ元リージョンで Backup Planを作成
+aws --profile backupadmin --region ${SOURCE_REGION}\
+    backup create-backup-plan \
+        --backup-plan "${BACKUP_PLAN_JSON}"
+```
+
+### (6)-(c) バックアップ対象のBackupPlanへの登録
+バックアップ対象のリソース(ここではEFS)を作成したBackupPlanに登録します。
+```shell
+EFS_FILE_SYSTEM_ARN=$(aws --profile backupadmin --region ${SOURCE_REGION} --output text \
+    efs describe-file-systems \
+    --query 'FileSystems[].{Name:Name,Arn:FileSystemArn}' \
+    |grep BackupTest-Volume|awk '{print $1}' )
+BACKUP_PLAN_ID=$(aws --profile backupadmin --region ${SOURCE_REGION} --output text \
+    backup list-backup-plans \
+    --query 'BackupPlansList[].{Name:BackupPlanName,Id:BackupPlanId}' \
+    |grep  TestEFS-testplan | awk '{print $1}')
+BACKUP_SERVICE_LINKED_ROLE_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text \
+    iam get-role \
+        --role-name AWSServiceRoleForBackup \
+    --query 'Role.Arn')
+echo -e "EFS_FILE_SYSTEM_ARN            = ${EFS_FILE_SYSTEM_ARN}\nBACKUP_PLAN_ID                 = ${BACKUP_PLAN_ID}\nBACKUP_SERVICE_LINKED_ROLE_ARN = ${BACKUP_SERVICE_LINKED_ROLE_ARN}"
+
+#Session用のJSON
+BACKUP_SESSIOM_JSON='
+{
+  "SelectionName": "TestEFSーselection",
+  "IamRoleArn": "'"${BACKUP_SERVICE_LINKED_ROLE_ARN}"'",
+  "Resources": [
+    "'"${EFS_FILE_SYSTEM_ARN}"'"
+  ],
+  "ListOfTags": [
+    {
+      "ConditionType": "STRINGEQUALS",
+      "ConditionKey": "aws:elasticfilesystem:custome-backup",
+      "ConditionValue": "enabled"
+    }
+  ]
+}'
+
+#Selectionの作成
+aws --profile backupadmin --region ${SOURCE_REGION}\
+    backup create-backup-selection \
+        --backup-plan-id "${BACKUP_PLAN_ID}" \
+        --backup-selection "${BACKUP_SESSIOM_JSON}"
+```
+
+
+
