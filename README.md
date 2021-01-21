@@ -131,7 +131,7 @@ aws --profile ${PROFILE} cloudformation create-stack \
 ```
 
 ## (4)IAMロールの作成
-### (4)-(a)AWS Backup管理者のIAMロール作成
+### (4)-(a)ロール共通設定
 ```shell
 #CMKのARN取得
 SOURCE_CMK_ARN=$(aws --profile ${PROFILE} --region ${SOURCE_REGION} --output text\
@@ -144,7 +144,7 @@ DEST_CMK_ARN=$(aws --profile ${PROFILE} --region ${DEST_REGION} --output text\
     --query 'KeyMetadata.Arn' )
 echo -e "SOURCE_CMK_ARN = ${SOURCE_CMK_ARN}\nDEST_CMK_ARN   = ${DEST_CMK_ARN}"
 #TrustPolicy
-POLICY='{
+TRUST_POLICY='{
   "Version": "2012-10-17",
   "Statement": [
     {
@@ -157,16 +157,16 @@ POLICY='{
     }
   ]
 }'
+```
 
+### (4)-(b) AWS Backup管理者のIAMロール作成
+```shell
 #IAMロールの作成
 aws --profile ${PROFILE} --region ${REGION} \
     iam create-role \
         --role-name "BackupTest-AdminRole" \
-        --assume-role-policy-document "${POLICY}" \
+        --assume-role-policy-document "${TRUST_POLICY}" \
         --max-session-duration 43200
-
-        "arn:aws:backup:'"${SOURCE_REGION}"':'"${ACCOUNTID}"':backup-vault:*",
-        "arn:aws:backup:'"${DEST_REGION}"':'"${ACCOUNTID}"':backup-vault:*"
 
 #インラインポリシーの追加
 POLICY='{
@@ -207,7 +207,11 @@ POLICY='{
       "Effect": "Allow",
       "Action": [
         "backup:CreateBackupVault",
-        "backup:DeleteBackupVault"
+        "backup:DeleteBackupVault",
+        "backup:DeleteBackupVaultAccessPolicy",
+        "backup:PutBackupVaultAccessPolicy",
+        "backup:DeleteBackupVaultNotification",
+        "backup:PutBackupVaultNotifications"
       ],
       "Resource": [
         "arn:aws:backup:*:'"${ACCOUNTID}"':backup-vault:*"
@@ -259,6 +263,37 @@ POLICY='{
       "Resource": [
         "arn:aws:iam::'"${ACCOUNTID}"':role/aws-service-role/backup.amazonaws.com/AWSServiceRoleForBackup"
       ]
+    },
+    {
+      "Sid": "ManagedRecoveryPolint",
+      "Effect": "Allow",
+      "Action": [
+        "backup:DeleteRecoveryPoint"
+      ],
+      "Resource": [
+        "arn:aws:ec2:*::snapshot/*",
+        "arn:aws:backup:*:'"${ACCOUNTID}"':recovery-point:*",
+        "arn:aws:rds:*:'"${ACCOUNTID}"':snapshot:awsbackup:*",
+        "arn:aws:rds:*:'"${ACCOUNTID}"':cluster-snapshot:awsbackup:*"
+      ]
+    },
+    {
+      "Sid": "ManageGlobalAndRegionSetting",
+      "Effect": "Allow",
+      "Action": [
+        "backup:UpdateGlobalSettings",
+        "backup:UpdateRegionSettings"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EditTagsOfBackupResources",
+      "Effect": "Allow",
+      "Action": [
+        "backup:TagResource",
+        "backup:UntagResource"
+      ],
+      "Resource": "*"
     }
   ]
 }'
@@ -271,6 +306,62 @@ aws --profile ${PROFILE} --region ${REGION} \
         --policy-document "${POLICY}";
         
 ```
+
+### (4)-(c) AWS Backup利用者のIAMロール作成
+```shell
+#IAMロールの作成
+aws --profile ${PROFILE} --region ${REGION} \
+    iam create-role \
+        --role-name "BackupTest-UserRole" \
+        --assume-role-policy-document "${TRUST_POLICY}" \
+        --max-session-duration 43200
+
+#インラインポリシーの追加
+POLICY='{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ViewOtherResources",
+      "Effect": "Allow",
+      "Action": [
+        "iam:Get*",
+        "iam:List*",
+        "elasticfilesystem:Describe*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadBackupResouces",
+      "Effect": "Allow",
+      "Action": [
+        "backup:Describe*",
+        "backup:Get*",
+        "backup:List*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ExecuteBackupJob",
+      "Effect": "Allow",
+      "Action": [
+        "backup:StartBackupJob",
+        "backup:StopBackupJob"
+      ],
+      "Resource": [
+        "arn:aws:backup:*:'"${ACCOUNTID}"':backup-vault:*"
+      ]
+    }
+  ]
+}'
+
+#インラインポリシーの設定
+aws --profile ${PROFILE} --region ${REGION} \
+    iam put-role-policy \
+        --role-name "BackupTest-UserRole" \
+        --policy-name "AWSBackupUserPolicy" \
+        --policy-document "${POLICY}";
+```
+
 
 ## (5)AWS Backup管理者のAWS CLIプロファイル作成
 ```shell
@@ -400,6 +491,18 @@ aws --profile backupadmin --region ${SOURCE_REGION}\
         --backup-plan-id "${BACKUP_PLAN_ID}" \
         --backup-selection "${BACKUP_SESSIOM_JSON}"
 ```
+## (7) オンデマンドでのバックアップ運用
+### (7)-(a) オンデマンドでバックアップジョブ実行
+```shell
+```
 
 
 
+
+aws backup start-backup-job 
+--backup-vault-name primary 
+--resource-arn arn:aws:ec2:eu-west-1:123456789:volume/vol-0abcdef1234
+--iam-role-arn arn:aws:iam::123456789:role/service-role/AWSBackupDefaultServiceRole --idempotency-token 623f13d2-78d2-11ea-bc55-0242ac130003 
+--start-window-minutes 60 
+--complete-window-minutes 10080 
+--lifecycle DeleteAfterDays=30 --region eu-west-1
