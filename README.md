@@ -377,6 +377,18 @@ echo -e "[backupadmin]\nrole_arn = ${ADMIN_ROLE_ARN}\nsource_profile = ${PROFILE
 #設定確認
 aws --profile backupadmin sts get-caller-identity
 
+# BackupTest-UserRoleのARNを確認する
+USER_ROLE_ARN=$(aws --output text --profile ${PROFILE} --region ${REGION} \
+    iam get-role \
+        --role-name "BackupTest-UserRole" \
+    --query 'Role.Arn')
+
+#User用のProfileの設定
+echo -e "[profile backupuser]\nregion = ${REGION}\noutput = json" >> ~/.aws/config
+echo -e "[backupuser]\nrole_arn = ${USER_ROLE_ARN}\nsource_profile = ${PROFILE}" >> ~/.aws/credentials
+#設定確認
+aws --profile backupuser sts get-caller-identity
+
 ```
 
 ## (6)AWS Backupの設定
