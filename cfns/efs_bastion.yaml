@@ -1,0 +1,157 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploy a EFS and a bastion instance.
+#----------------------------------------------
+Parameters:
+  #------------------
+  InstanceType:
+    Description: (Optional) Instance type
+    Type: String
+    Default: t2.micro
+  AmiId:
+    Description: AMI ID
+    Type: String
+  KEYNAME:
+    Type: String
+  AutoRecoveryMinutes:
+    Description: (optional) Auto Recovery Time(Minutes)
+    Type: Number
+    Default: 1
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      -
+        Label:
+          default:  Instances
+        Parameters:
+          - InstanceType
+          - AmiId
+          - KEYNAME
+          - AutoRecoveryMinutes
+#----------------------------------------------
+Conditions: 
+  CheckAutoRecovery: !Not [!Equals [!Ref AutoRecoveryMinutes, 0 ]]
+#----------------------------------------------
+Resources:
+#--Security Group
+  BastionSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: BackupTest-VPC-BastionSG
+      GroupDescription: SG for bashtion instances
+      VpcId: 
+        Fn::ImportValue: BackupTest-VPC-VpcId
+      Tags:
+        - Key: Name
+          Value: BackupTest-VPC-BastionSG
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+#--
+  EfsMountTargetSecurityGroupSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: BackupTest-VPC-EfsMountTGSG
+      GroupDescription: SG for EFS
+      VpcId: 
+        Fn::ImportValue: BackupTest-VPC-VpcId
+      Tags:
+        - Key: Name
+          Value: BackupTest-VPC-EfsMountTGSG
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref BastionSG
+#--Bastion作成
+  Bastion:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      #IamInstanceProfile:
+      #  Fn::ImportValue: 
+      KeyName: !Ref KEYNAME
+      Monitoring: yes
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId:
+            Fn::ImportValue: BackupTest-VPC-PublicSubnet1Id
+          GroupSet:
+            - !Ref BastionSG
+          AssociatePublicIpAddress: true
+      Tags:
+        - Key: Name
+          Value: BackupTest-Bastion
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          # Update ALL rpms, and change hostname to Userfrendly name 
+          yum -y update
+          hostnamectl set-hostname "BackupTest-Bastion"
+  BastionRecovery:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CheckAutoRecovery
+    Properties:
+      AlarmDescription: AutoRecovery for the Bastion
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: !Ref AutoRecoveryMinutes
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0
+      AlarmActions:
+      - !Sub "arn:aws:automate:${AWS::Region}:ec2:recover"
+      - !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:admin"
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref Bastion
+    DependsOn: Bastion
+#--EFS作成
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      FileSystemTags:
+      - Key: Name
+        Value: BackupTest-Volume
+  MountTargetPrivateSub1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId:
+        Ref: FileSystem
+      SubnetId:
+        Fn::ImportValue: BackupTest-VPC-PrivateSubnet1Id
+      SecurityGroups:
+        - !Ref EfsMountTargetSecurityGroupSG
+  MountTargetPrivateSub2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId:
+        Ref: FileSystem
+      SubnetId:
+        Fn::ImportValue: BackupTest-VPC-PrivateSubnet2Id
+      SecurityGroups:
+        - !Ref EfsMountTargetSecurityGroupSG
+#----------------------------------------------
+Outputs:
+  #------------------ VPC
+  InstancePublicIp:
+    Description: Bastion PublicIP
+    Value: !GetAtt Bastion.PublicIp
+    Export:
+      Name: !Sub ${AWS::StackName}-InstancePublicIp
+  EFSFilesystemId:
+    Description: Filesystem ID
+    Value: !Ref FileSystem
+    Export:
+      Name: !Sub ${AWS::StackName}-EFSFilesystemId
+  EFSFilesystemArn:
+    Description: Filesystem ID
+    Value: !GetAtt FileSystem.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-EFSFilesystemArn

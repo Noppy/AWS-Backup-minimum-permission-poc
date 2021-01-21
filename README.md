@@ -9,7 +9,9 @@ AWS Backupの最小権限の調査手順
 - bashまたはbash互換が利用可能な環境(LinuxやMacの環境)
 - aws-cliのセットアップ
 - AdministratorAccessポリシーが付与されたIAMユーザでCLIを実行可能とする、aws-cliのProfileの設定
-(1)-(b) CLI実行用の事前準備
+- gitコマンド
+
+### (1)-(b) CLI実行用の事前準備
 これ以降のAWS-CLIで共通で利用するパラメータを環境変数で設定しておきます。
 ```shell
 export PROFILE=<設定したプロファイル名称を指定。デフォルトの場合はdefaultを設定>
@@ -17,6 +19,15 @@ export REGION=$(aws --output text --profile ${PROFILE} configure get region)
 export ACCOUNTID=$(aws --output text --profile ${PROFILE} sts get-caller-identity --query 'Account')
 echo -e "PROFILE   = ${PROFILE}\nREGION    = ${REGION}\nACCOUNTID = ${ACCOUNTID}"
 ```
+
+### (1)-(c) gitのclone
+VPCやEFS作成用のCloudFormationテンプレートを取得します。
+```shell
+git clone https://github.com/Noppy/AWS-Backup-minimum-permission-poc.git
+cd AWS-Backup-minimum-permission-poc
+```
+
+### (1)-(d) パラメータ設定
 検証で用意するRoleにAssumeする元のIAMユーザを指定します。
 ```shell
 TRUST_IAMUSER_ARN="<AssumeRole元のIAMユーザARNを指定する>"
@@ -37,6 +48,73 @@ aws --profile ${PROFILE} --region ${REGION} \
 ```
 
 ## (3)EFSの作成(バックアップ対象の準備)
+### (3)-(a) VPCの作成
+```shell
+CFN_STACK_PARAMETERS='
+[
+  {
+    "ParameterKey": "DnsHostnames",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "DnsSupport",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "InternetAccess",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "EnableNatGW",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "VpcName",
+    "ParameterValue": "BackupPoCVPC"
+  }
+]'
+
+aws --profile ${PROFILE} cloudformation create-stack \
+    --stack-name BackupTest-VPC \
+    --template-body "file://./cfns/vpc-4subnets.yaml" \
+    --parameters "${CFN_STACK_PARAMETERS}" \
+    --capabilities CAPABILITY_IAM ;
+```
+### (3)-(b) BasionとEFSの作成
+```shell
+KEYNAME="CHANGE_KEY_PAIR_NAME"  #環境に合わせてキーペア名を設定してください。 
+AL2_AMIID=$(aws --profile ${PROFILE} --output text \
+    ec2 describe-images \
+        --owners amazon \
+        --filters 'Name=name,Values=amzn2-ami-hvm-2.0.????????.?-x86_64-gp2' \
+                  'Name=state,Values=available' \
+        --query 'reverse(sort_by(Images, &CreationDate))[:1].ImageId' ) ;
+echo -e "KEYNAME   = ${KEYNAME}\nAL2_AMIID = ${AL2_AMIID}"
+
+# Set Stack Parameters
+CFN_STACK_PARAMETERS='
+[
+  {
+    "ParameterKey": "AmiId",
+    "ParameterValue": "'"${AL2_AMIID}"'"
+  },
+  {
+    "ParameterKey": "KEYNAME",
+    "ParameterValue": "'"${KEYNAME}"'"
+  }
+]'
+# Create Bastion
+
+aws --profile ${PROFILE} cloudformation create-stack \
+    --stack-name BackupTest-EfsAndBastion  \
+    --template-body "file://./cfns/efs_bastion.yaml" \
+    --parameters "${CFN_STACK_PARAMETERS}";
+```
+
+
+
+### (3)-(b) EFSやBastionの作成
+
 
 ## (4)IAMロールの作成
 ### (4)-(a)AWS Backup管理者のIAMロール作成
