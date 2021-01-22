@@ -350,6 +350,16 @@ POLICY='{
       "Resource": [
         "arn:aws:backup:*:'"${ACCOUNTID}"':backup-vault:*"
       ]
+    },
+    {
+      "Sid": "PassRoleForStartXXXXJob",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::'"${ACCOUNTID}"':role/aws-service-role/backup.amazonaws.com/AWSServiceRoleForBackup"
+      ]
     }
   ]
 }'
@@ -474,7 +484,7 @@ BACKUP_PLAN_ID=$(aws --profile backupadmin --region ${SOURCE_REGION} --output te
     backup list-backup-plans \
     --query 'BackupPlansList[].{Name:BackupPlanName,Id:BackupPlanId}' \
     |grep  TestEFS-testplan | awk '{print $1}')
-BACKUP_SERVICE_LINKED_ROLE_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text \
+BACKUP_SERVICE_LINKED_ROLE_ARN=$(aws --profile backupadmin --region ${REGION} --output text \
     iam get-role \
         --role-name AWSServiceRoleForBackup \
     --query 'Role.Arn')
@@ -505,16 +515,28 @@ aws --profile backupadmin --region ${SOURCE_REGION}\
 ```
 ## (7) オンデマンドでのバックアップ運用
 ### (7)-(a) オンデマンドでバックアップジョブ実行
+定期実行ではなく、手動でワンショットのバックアップジョブを実行する手順です。
+
 ```shell
+#リソース情報の取得
+EFS_FILE_SYSTEM_ARN=$(aws --profile backupuser --region ${SOURCE_REGION} --output text \
+    efs describe-file-systems \
+    --query 'FileSystems[].{Name:Name,Arn:FileSystemArn}' \
+    |grep BackupTest-Volume|awk '{print $1}' )
+BACKUP_SERVICE_LINKED_ROLE_ARN=$(aws --profile backupuser --region ${REGION} --output text \
+    iam get-role \
+        --role-name AWSServiceRoleForBackup \
+    --query 'Role.Arn')
+echo -e "EFS_FILE_SYSTEM_ARN            = ${EFS_FILE_SYSTEM_ARN}\nBACKUP_SERVICE_LINKED_ROLE_ARN = ${BACKUP_SERVICE_LINKED_ROLE_ARN}"
+
+#バックアップジョブの実行
+aws --profile backupuser --region ${SOURCE_REGION} \
+    backup start-backup-job \
+        --backup-vault-name  "TestEFS-Source-BackupVault" \
+        --resource-arn ${EFS_FILE_SYSTEM_ARN} \
+        --iam-role-arn ${BACKUP_SERVICE_LINKED_ROLE_ARN} \
+        --start-window-minutes 60 \
+        --complete-window-minutes 10080 \
+        --lifecycle DeleteAfterDays=30
+
 ```
-
-
-
-
-aws backup start-backup-job 
---backup-vault-name primary 
---resource-arn arn:aws:ec2:eu-west-1:123456789:volume/vol-0abcdef1234
---iam-role-arn arn:aws:iam::123456789:role/service-role/AWSBackupDefaultServiceRole --idempotency-token 623f13d2-78d2-11ea-bc55-0242ac130003 
---start-window-minutes 60 
---complete-window-minutes 10080 
---lifecycle DeleteAfterDays=30 --region eu-west-1
