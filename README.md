@@ -443,7 +443,7 @@ OPER_ROLE_ARN=$(aws --output text --profile ${PROFILE} --region ${REGION} \
 
 #OperatorRole用のProfileの設定
 echo -e "[profile backupoper]\nregion = ${REGION}\noutput = json" >> ~/.aws/config
-echo -e "[backupoper]\nrole_arn = ${USER_ROLE_ARN}\nsource_profile = ${PROFILE}" >> ~/.aws/credentials
+echo -e "[backupoper]\nrole_arn = ${OPER_ROLE_ARN}\nsource_profile = ${PROFILE}" >> ~/.aws/credentials
 #設定確認
 aws --profile backupoper sts get-caller-identity
 
@@ -524,6 +524,7 @@ aws --profile backupadmin --region ${SOURCE_REGION}\
 ### (6)-(c) バックアップ対象のBackupPlanへの登録
 バックアップ対象のリソース(ここではEFS)を作成したBackupPlanに登録します。
 ```shell
+#リソース情報の取得
 EFS_FILE_SYSTEM_ARN=$(aws --profile backupadmin --region ${SOURCE_REGION} --output text \
     efs describe-file-systems \
     --query 'FileSystems[].{Name:Name,Arn:FileSystemArn}' \
@@ -571,13 +572,13 @@ EFS_FILE_SYSTEM_ARN=$(aws --profile backupoper --region ${SOURCE_REGION} --outpu
     efs describe-file-systems \
     --query 'FileSystems[].{Name:Name,Arn:FileSystemArn}' \
     |grep BackupTest-Volume|awk '{print $1}' )
-BACKUP_SERVICE_LINKED_ROLE_ARN=$(aws --profile backupoper --region ${REGION} --output text \
+BACKUP_SERVICE_ROLE_ARN=$(aws --profile backupadmin --region ${REGION} --output text \
     iam get-role \
-        --role-name AWSServiceRoleForBackup \
+        --role-name BackupTest-ServiceBackupPolicy \
     --query 'Role.Arn')
 UUID=$(python -c 'import uuid; print(uuid.uuid4())' )
 
-echo -e "EFS_FILE_SYSTEM_ARN = ${EFS_FILE_SYSTEM_ARN}\nUUID                = ${UUID}\nBACKUP_SERVICE_LINKED_ROLE_ARN = ${BACKUP_SERVICE_LINKED_ROLE_ARN}"
+echo -e "EFS_FILE_SYSTEM_ARN = ${EFS_FILE_SYSTEM_ARN}\nUUID                = ${UUID}\nBACKUP_SERVICE_ROLE_ARN = ${BACKUP_SERVICE_ROLE_ARN}"
 
 #バックアップジョブの実行
 aws --profile backupoper --region ${SOURCE_REGION} \
@@ -585,7 +586,7 @@ aws --profile backupoper --region ${SOURCE_REGION} \
         --idempotency-token ${UUID} \
         --backup-vault-name  "TestEFS-Source-BackupVault" \
         --resource-arn ${EFS_FILE_SYSTEM_ARN} \
-        --iam-role-arn ${BACKUP_SERVICE_LINKED_ROLE_ARN} \
+        --iam-role-arn ${BACKUP_SERVICE_ROLE_ARN} \
         --start-window-minutes 60 \
         --complete-window-minutes 10080 \
         --lifecycle DeleteAfterDays=30
