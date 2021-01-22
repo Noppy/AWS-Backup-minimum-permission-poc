@@ -159,7 +159,42 @@ TRUST_POLICY='{
 }'
 ```
 
-### (4)-(b) AWS Backup管理者のIAMロール作成
+### (4)-(b) AWS Backupサービスでのバックアップ実行用のIAMロール作成
+```shell
+#TrustPolicy
+BACKUP_TRUST_POLICY='{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "backup.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}'
+
+#IAMロールの作成
+aws --profile ${PROFILE} --region ${REGION} \
+    iam create-role \
+        --role-name "BackupTest-ServiceBackupPolicy" \
+        --assume-role-policy-document "${BACKUP_TRUST_POLICY}" \
+        --max-session-duration 43200
+
+#AWS管理ポリシーのアタッチ
+aws --profile ${PROFILE} --region ${REGION} \
+    iam attach-role-policy \
+        --role-name "BackupTest-ServiceBackupPolicy" \
+        --policy-arn "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup"
+
+aws --profile ${PROFILE} --region ${REGION} \
+    iam attach-role-policy \
+        --role-name "BackupTest-ServiceBackupPolicy" \
+        --policy-arn "arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores"
+```
+
+### (4)-(c) AWS Backup管理者のIAMロール作成
 ```shell
 #IAMロールの作成
 aws --profile ${PROFILE} --region ${REGION} \
@@ -167,6 +202,13 @@ aws --profile ${PROFILE} --region ${REGION} \
         --role-name "BackupTest-AdminRole" \
         --assume-role-policy-document "${TRUST_POLICY}" \
         --max-session-duration 43200
+
+#バックアップ実行用のIAMロールのARN取得
+BACKUP_SERVICE_ROLE_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text \
+    iam get-role \
+        --role-name BackupTest-ServiceBackupPolicy \
+    --query 'Role.Arn')
+echo -e "BACKUP_SERVICE_ROLE_ARN = ${BACKUP_SERVICE_ROLE_ARN}"
 
 #インラインポリシーの追加
 POLICY='{
@@ -261,7 +303,7 @@ POLICY='{
         "iam:PassRole"
       ],
       "Resource": [
-        "arn:aws:iam::'"${ACCOUNTID}"':role/aws-service-role/backup.amazonaws.com/AWSServiceRoleForBackup"
+        "'"${BACKUP_SERVICE_ROLE_ARN}"'"
       ]
     },
     {
@@ -307,14 +349,21 @@ aws --profile ${PROFILE} --region ${REGION} \
         
 ```
 
-### (4)-(c) AWS Backup利用者のIAMロール作成
+### (4)-(d) AWS BackupオペレータのIAMロール作成
 ```shell
 #IAMロールの作成
 aws --profile ${PROFILE} --region ${REGION} \
     iam create-role \
-        --role-name "BackupTest-UserRole" \
+        --role-name "BackupTest-OperatorRole" \
         --assume-role-policy-document "${TRUST_POLICY}" \
         --max-session-duration 43200
+
+#バックアップ実行用のIAMロールのARN取得
+BACKUP_SERVICE_ROLE_ARN=$(aws --profile ${PROFILE} --region ${REGION} --output text \
+    iam get-role \
+        --role-name BackupTest-ServiceBackupPolicy \
+    --query 'Role.Arn')
+echo -e "BACKUP_SERVICE_ROLE_ARN = ${BACKUP_SERVICE_ROLE_ARN}"
 
 #インラインポリシーの追加
 POLICY='{
@@ -358,7 +407,7 @@ POLICY='{
         "iam:PassRole"
       ],
       "Resource": [
-        "arn:aws:iam::'"${ACCOUNTID}"':role/aws-service-role/backup.amazonaws.com/AWSServiceRoleForBackup"
+        "'"${BACKUP_SERVICE_ROLE_ARN}"'"
       ]
     }
   ]
@@ -367,11 +416,10 @@ POLICY='{
 #インラインポリシーの設定
 aws --profile ${PROFILE} --region ${REGION} \
     iam put-role-policy \
-        --role-name "BackupTest-UserRole" \
-        --policy-name "AWSBackupUserPolicy" \
+        --role-name "BackupTest-OperatorRole" \
+        --policy-name "AWSBackupOperatorPolicy" \
         --policy-document "${POLICY}";
 ```
-
 
 ## (5)AWS Backup管理者のAWS CLIプロファイル作成
 ```shell
@@ -387,17 +435,17 @@ echo -e "[backupadmin]\nrole_arn = ${ADMIN_ROLE_ARN}\nsource_profile = ${PROFILE
 #設定確認
 aws --profile backupadmin sts get-caller-identity
 
-# BackupTest-UserRoleのARNを確認する
-USER_ROLE_ARN=$(aws --output text --profile ${PROFILE} --region ${REGION} \
+# BackupTest-OperatorRoleのARNを確認する
+OPER_ROLE_ARN=$(aws --output text --profile ${PROFILE} --region ${REGION} \
     iam get-role \
-        --role-name "BackupTest-UserRole" \
+        --role-name "BackupTest-OperatorRole" \
     --query 'Role.Arn')
 
-#User用のProfileの設定
-echo -e "[profile backupuser]\nregion = ${REGION}\noutput = json" >> ~/.aws/config
-echo -e "[backupuser]\nrole_arn = ${USER_ROLE_ARN}\nsource_profile = ${PROFILE}" >> ~/.aws/credentials
+#OperatorRole用のProfileの設定
+echo -e "[profile backupoper]\nregion = ${REGION}\noutput = json" >> ~/.aws/config
+echo -e "[backupoper]\nrole_arn = ${USER_ROLE_ARN}\nsource_profile = ${PROFILE}" >> ~/.aws/credentials
 #設定確認
-aws --profile backupuser sts get-caller-identity
+aws --profile backupoper sts get-caller-identity
 
 ```
 
@@ -484,17 +532,17 @@ BACKUP_PLAN_ID=$(aws --profile backupadmin --region ${SOURCE_REGION} --output te
     backup list-backup-plans \
     --query 'BackupPlansList[].{Name:BackupPlanName,Id:BackupPlanId}' \
     |grep  TestEFS-testplan | awk '{print $1}')
-BACKUP_SERVICE_LINKED_ROLE_ARN=$(aws --profile backupadmin --region ${REGION} --output text \
+BACKUP_SERVICE_ROLE_ARN=$(aws --profile backupadmin --region ${REGION} --output text \
     iam get-role \
-        --role-name AWSServiceRoleForBackup \
+        --role-name BackupTest-ServiceBackupPolicy \
     --query 'Role.Arn')
-echo -e "EFS_FILE_SYSTEM_ARN            = ${EFS_FILE_SYSTEM_ARN}\nBACKUP_PLAN_ID                 = ${BACKUP_PLAN_ID}\nBACKUP_SERVICE_LINKED_ROLE_ARN = ${BACKUP_SERVICE_LINKED_ROLE_ARN}"
+echo -e "EFS_FILE_SYSTEM_ARN     = ${EFS_FILE_SYSTEM_ARN}\nBACKUP_PLAN_ID           = ${BACKUP_PLAN_ID}\nBACKUP_SERVICE_ROLE_ARN = ${BACKUP_SERVICE_ROLE_ARN}"
 
 #Session用のJSON
 BACKUP_SESSIOM_JSON='
 {
   "SelectionName": "TestEFSーselection",
-  "IamRoleArn": "'"${BACKUP_SERVICE_LINKED_ROLE_ARN}"'",
+  "IamRoleArn": "'"${BACKUP_SERVICE_ROLE_ARN}"'",
   "Resources": [
     "'"${EFS_FILE_SYSTEM_ARN}"'"
   ],
@@ -519,19 +567,22 @@ aws --profile backupadmin --region ${SOURCE_REGION}\
 
 ```shell
 #リソース情報の取得
-EFS_FILE_SYSTEM_ARN=$(aws --profile backupuser --region ${SOURCE_REGION} --output text \
+EFS_FILE_SYSTEM_ARN=$(aws --profile backupoper --region ${SOURCE_REGION} --output text \
     efs describe-file-systems \
     --query 'FileSystems[].{Name:Name,Arn:FileSystemArn}' \
     |grep BackupTest-Volume|awk '{print $1}' )
-BACKUP_SERVICE_LINKED_ROLE_ARN=$(aws --profile backupuser --region ${REGION} --output text \
+BACKUP_SERVICE_LINKED_ROLE_ARN=$(aws --profile backupoper --region ${REGION} --output text \
     iam get-role \
         --role-name AWSServiceRoleForBackup \
     --query 'Role.Arn')
-echo -e "EFS_FILE_SYSTEM_ARN            = ${EFS_FILE_SYSTEM_ARN}\nBACKUP_SERVICE_LINKED_ROLE_ARN = ${BACKUP_SERVICE_LINKED_ROLE_ARN}"
+UUID=$(python -c 'import uuid; print(uuid.uuid4())' )
+
+echo -e "EFS_FILE_SYSTEM_ARN = ${EFS_FILE_SYSTEM_ARN}\nUUID                = ${UUID}\nBACKUP_SERVICE_LINKED_ROLE_ARN = ${BACKUP_SERVICE_LINKED_ROLE_ARN}"
 
 #バックアップジョブの実行
-aws --profile backupuser --region ${SOURCE_REGION} \
+aws --profile backupoper --region ${SOURCE_REGION} \
     backup start-backup-job \
+        --idempotency-token ${UUID} \
         --backup-vault-name  "TestEFS-Source-BackupVault" \
         --resource-arn ${EFS_FILE_SYSTEM_ARN} \
         --iam-role-arn ${BACKUP_SERVICE_LINKED_ROLE_ARN} \
