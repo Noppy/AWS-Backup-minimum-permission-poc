@@ -1,6 +1,10 @@
 # AWS-Backup-minimum-permission-poc
 AWS Backupの最小権限の調査手順
 
+# 参考
+- [CLIでAWS BackupのRecoveryPointからEFSを復旧する手順](https://aws.amazon.com/jp/premiumsupport/knowledge-center/aws-backup-restore-efs-file-system-cli/)
+- [CLIでAWS BackupのRecoveryPointからEC2を復旧する手順](https://aws.amazon.com/jp/premiumsupport/knowledge-center/aws-backup-cli-create-plan-run-job/)
+
 
 # 手順
 ## (1)環境設定
@@ -401,6 +405,17 @@ POLICY='{
       ]
     },
     {
+      "Sid": "ExecuteCopyAndRestoreJob",
+      "Effect": "Allow",
+      "Action": [
+        "backup:StartCopyJob",
+        "backup:StartRestoreJob"
+      ],
+      "Resource": [
+        "*"
+      ]
+    },
+    {
       "Sid": "PassRoleForStartXXXXJob",
       "Effect": "Allow",
       "Action": [
@@ -581,7 +596,7 @@ UUID=$(python -c 'import uuid; print(uuid.uuid4())' )
 echo -e "EFS_FILE_SYSTEM_ARN = ${EFS_FILE_SYSTEM_ARN}\nUUID                = ${UUID}\nBACKUP_SERVICE_ROLE_ARN = ${BACKUP_SERVICE_ROLE_ARN}"
 
 #バックアップジョブの実行
-aws --profile backupoper --region ${SOURCE_REGION} \
+BACKUP_JOB_ID=$(aws --profile backupoper --region ${SOURCE_REGION} --output text \
     backup start-backup-job \
         --idempotency-token ${UUID} \
         --backup-vault-name  "TestEFS-Source-BackupVault" \
@@ -589,6 +604,126 @@ aws --profile backupoper --region ${SOURCE_REGION} \
         --iam-role-arn ${BACKUP_SERVICE_ROLE_ARN} \
         --start-window-minutes 60 \
         --complete-window-minutes 10080 \
-        --lifecycle DeleteAfterDays=30
+        --lifecycle DeleteAfterDays=30 \
+    --query 'BackupJobId' )
+
+#バックアップステータスチェック(COMPLETEDになるまで待機)
+while true;
+do
+    STATUS=$(aws --profile backupoper --region ${SOURCE_REGION} --output text \
+        backup describe-backup-job \
+            --backup-job-id ${BACKUP_JOB_ID} \
+        --query '{Id:BackupJobId,State:State}' )
+    echo -e "$(date '+%m/%d %H:%M:%S') ${STATUS}"
+    if [ "A$(echo ${STATUS}|awk '{print $2}')" = "ACOMPLETED" ]; then break; fi
+done
+
+```
+
+### (7)-(b) 取得したリカバリーポイントを他Regionへコピー
+コピー元のリカバリーポイントとコピー先のBackupVaultを指定してバックアップデータをコピーします。
+- StartCopyJobは、`コピー元のAWSアカウント&リージョン`で実行する
+- コピー元のリカバリーポイントは、StartCopyJobを実行しているを`AWSアカウント&リージョン`の物しか指定できない
+  - コピー元のリカバリーポイントは、`格納しているBackupVault名`+`リカバリーポイントARN`の組み合わせで指定する(2つとも指定が必須)
+  - `格納しているBackupVault名`は、BackupVault名での指定であり、他アカウント or 他リージョンの物は指定できない
+  - したがって、他アカウント or 他リージョンのリカバリーポイントも指定できない。
+```shell
+#リカバリーポイントのARN取得
+RECOVERY_POINT_ARN=$(aws --profile backupoper --region ${SOURCE_REGION} --output text \
+        backup describe-backup-job \
+            --backup-job-id ${BACKUP_JOB_ID} \
+        --query '{RecoveryPointArn:RecoveryPointArn}' )
+DEST_BACKUPVAUT_ARN=$(aws --profile backupoper --region ${DEST_REGION} --output text \
+    backup describe-backup-vault \
+        --backup-vault-name TestEFS-Dest-BackupVault \
+    --query 'BackupVaultArn')
+BACKUP_SERVICE_ROLE_ARN=$(aws --profile backupoper --region ${REGION} --output text \
+    iam get-role \
+        --role-name BackupTest-ServiceBackupPolicy \
+    --query 'Role.Arn')
+UUID=$(python -c 'import uuid; print(uuid.uuid4())' )
+echo -e "RECOVERY_POINT_ARN      = ${RECOVERY_POINT_ARN}\nDEST_BACKUPVAUT_ARN     = ${DEST_BACKUPVAUT_ARN}\nBACKUP_SERVICE_ROLE_ARN = ${BACKUP_SERVICE_ROLE_ARN}\nUUID = ${UUID}"
+
+#リカバリーポイントの他Regionコピー
+COPY_JOB_ID=$(aws --profile backupoper --region ${SOURCE_REGION} --output text \
+    backup start-copy-job \
+        --recovery-point-arn ${RECOVERY_POINT_ARN} \
+        --source-backup-vault-name "TestEFS-Source-BackupVault" \
+        --destination-backup-vault-arn ${DEST_BACKUPVAUT_ARN} \
+        --iam-role-arn ${BACKUP_SERVICE_ROLE_ARN} \
+        --idempotency-token ${UUID} \
+        --lifecycle DeleteAfterDays=30 \
+    --query 'CopyJobId' )
+
+#バックアップステータスチェック(COMPLETEDになるまで待機)
+while true;
+do
+    STATUS=$(aws --profile backupoper --region ${SOURCE_REGION} --output text \
+        backup describe-copy-job \
+            --copy-job-id ${COPY_JOB_ID} \
+        --query 'CopyJob.{Id:CopyJobId,State:State}' )
+    echo -e "$(date '+%m/%d %H:%M:%S') ${STATUS}"
+    if [ "A$(echo ${STATUS}|awk '{print $2}')" = "ACOMPLETED" ]; then break; fi
+    sleep 10
+done
+
+
+```
+
+## (8) リストア運用
+```shell
+#データ手動設定
+RESTORE_RECOVERY_POINT_ARN="<復元元のリカバリーポイントのARNを指定する>"
+RESTORE_BACKUP_VALTE="<復元元のリカバリーポイントが格納されているバックアップボルト名を指定>"
+RESTORE_REGION="<復元元のリカバリーポイントが格納されるREGIONを指定>"
+RESTORE_CMK="${DEST_CMK_ARN}"
+
+
+
+RESTORE_RECOVERY_POINT_ARN=arn:aws:backup:ap-southeast-2:270025184181:recovery-point:4336a4f4-0480-4de7-a91e-a1cccc50bb07
+RESTORE_BACKUP_VALTE=
+RESTORE_REGION=ap-southeast-2
+RESTORE_CMK="${SOURCE_CMK_ARN}"
+
+#データ取得/生成
+BACKUP_SERVICE_ROLE_ARN=$(aws --profile backupoper --region ${REGION} --output text \
+    iam get-role \
+        --role-name BackupTest-ServiceBackupPolicy \
+    --query 'Role.Arn')
+UUID=$(python -c 'import uuid; print(uuid.uuid4())' )
+
+FILESYSTEM_ID=$(aws --profile backupoper --region ${RESTORE_REGION} --output text \
+    backup get-recovery-point-restore-metadata \
+    --backup-vault-name primary
+
+
+
+
+)
+
+
+aws backup get-recovery-point-restore-metadata --backup-vault-name primary --recovery-point-arn arn:aws:ec2:eu-west-1::snapshot/snap-0abcdaf2247b33dbc
+
+
+#リストア実行
+METADATA_JSON='{
+  "file-system-id": "fs-c1234567",
+  "Encrypted": "true", 
+  "PerformanceMode": "generalPurpose", 
+  "CreationToken": "d0c12345-678d-4071-bf30-8e7e54ab65df", 
+  "newFileSystem": "true"
+}'
+
+{}  
+
+aws --profile backupoper --region ${SOURCE_REGION} \
+    backup start-restore-job \
+        --recovery-point-arn ${RESTORE_RECOVERY_POINT_ARN} \
+        --metadata file:// 
+        --iam-role-arn ${BACKUP_SERVICE_ROLE_ARN} \
+        --idempotency-token ${UUID} \
+        --resource-type "EFS"
+
+
 
 ```
