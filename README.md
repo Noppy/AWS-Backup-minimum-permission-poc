@@ -666,64 +666,45 @@ do
     if [ "A$(echo ${STATUS}|awk '{print $2}')" = "ACOMPLETED" ]; then break; fi
     sleep 10
 done
-
-
 ```
 
 ## (8) リストア運用
 ```shell
 #データ手動設定
 RESTORE_RECOVERY_POINT_ARN="<復元元のリカバリーポイントのARNを指定する>"
-RESTORE_BACKUP_VALTE="<復元元のリカバリーポイントが格納されているバックアップボルト名を指定>"
-RESTORE_REGION="<復元元のリカバリーポイントが格納されるREGIONを指定>"
+RESTORE_BACKUP_VAULT="<復元元のリカバリーポイントが格納されているバックアップボルト名を指定>"
+RESTORE_STORED_REGION="<復元元のリカバリーポイントが格納されるREGIONを指定>"
+RESTORE_RESTORE_REGION="<復元先のリージョンを指定>"
 RESTORE_CMK="${DEST_CMK_ARN}"
 
-
-
-RESTORE_RECOVERY_POINT_ARN=arn:aws:backup:ap-southeast-2:270025184181:recovery-point:4336a4f4-0480-4de7-a91e-a1cccc50bb07
-RESTORE_BACKUP_VALTE=
-RESTORE_REGION=ap-southeast-2
-RESTORE_CMK="${SOURCE_CMK_ARN}"
-
 #データ取得/生成
+FILESYSTEM_ID=$(aws --profile backupoper --region ${RESTORE_STORED_REGION} --output text \
+    backup get-recovery-point-restore-metadata \
+        --backup-vault-name ${RESTORE_BACKUP_VAULT} \
+        --recovery-point-arn ${RESTORE_RECOVERY_POINT_ARN} \
+    --query 'RestoreMetadata."file-system-id"' )
 BACKUP_SERVICE_ROLE_ARN=$(aws --profile backupoper --region ${REGION} --output text \
     iam get-role \
         --role-name BackupTest-ServiceBackupPolicy \
     --query 'Role.Arn')
 UUID=$(python -c 'import uuid; print(uuid.uuid4())' )
 
-FILESYSTEM_ID=$(aws --profile backupoper --region ${RESTORE_REGION} --output text \
-    backup get-recovery-point-restore-metadata \
-    --backup-vault-name primary
-
-
-
-
-)
-
-
-aws backup get-recovery-point-restore-metadata --backup-vault-name primary --recovery-point-arn arn:aws:ec2:eu-west-1::snapshot/snap-0abcdaf2247b33dbc
-
-
 #リストア実行
 METADATA_JSON='{
-  "file-system-id": "fs-c1234567",
-  "Encrypted": "true", 
+  "file-system-id": "'"${FILESYSTEM_ID}"'",
+  "Encrypted": "true",
+  "KmsKeyId": "'${RESTORE_CMK}'",
   "PerformanceMode": "generalPurpose", 
-  "CreationToken": "d0c12345-678d-4071-bf30-8e7e54ab65df", 
+  "CreationToken": "'"${UUID}"'", 
   "newFileSystem": "true"
 }'
 
-{}  
-
-aws --profile backupoper --region ${SOURCE_REGION} \
+aws --profile backupoper --region ${RESTORE_RESTORE_REGION} \
     backup start-restore-job \
         --recovery-point-arn ${RESTORE_RECOVERY_POINT_ARN} \
-        --metadata file:// 
+        --metadata "${METADATA_JSON}" \
         --iam-role-arn ${BACKUP_SERVICE_ROLE_ARN} \
         --idempotency-token ${UUID} \
         --resource-type "EFS"
-
-
 
 ```
