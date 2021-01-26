@@ -4,6 +4,7 @@ AWS Backupの最小権限の調査手順
 # 参考
 - [CLIでAWS BackupのRecoveryPointからEFSを復旧する手順](https://aws.amazon.com/jp/premiumsupport/knowledge-center/aws-backup-restore-efs-file-system-cli/)
 - [CLIでAWS BackupのRecoveryPointからEC2を復旧する手順](https://aws.amazon.com/jp/premiumsupport/knowledge-center/aws-backup-cli-create-plan-run-job/)
+- [AWS Backup によるバックアップ取得の全体像をやっぱり絵に描いて理解してみた](https://dev.classmethod.jp/articles/aws-backup-perfect-understand/)
 
 
 # 手順
